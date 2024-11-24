@@ -9,20 +9,87 @@ from django.db import transaction
 
 Cliente = get_user_model()
 
+class AcompanharPedidosAgricultorAPIView(APIView):
+    def get(self, request, agricultor_id):
+        try:
+
+            # Recupera os itens do pedido
+            itens = ItemPedido.objects.filter(agricultor_id= agricultor_id)
+            response_data = []
+            for item in itens:
+                response_data.append({
+                    "nome": item.nome,
+                    "produto_id": item.produto_id,
+                    "quantidade": item.quantidade,
+                    "valor": item.valor,
+                    "id_agricultor": item.agricultor_id
+                }) 
+                    
+                
+            
+            # Retorna os detalhes do pedido junto com o status
+            return Response( response_data, status=status.HTTP_200_OK)
+        except Pedido.DoesNotExist:
+            return Response(
+                {"error": "Pedido não encontrado."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+class AcompanharPedidosClienteAPIView(APIView):
+    def get(self, request, cliente_id):
+        try:
+            # Fetch all Pedidos
+            pedidos = Pedido.objects.filter(cliente_id=cliente_id)
+            
+            # Build response data
+            response_data = []
+            for pedido in pedidos:
+                # Fetch associated ItemPedido objects
+                itens = ItemPedido.objects.filter(pedido=pedido.id)
+                
+                # Build the list of products
+                produtos = [
+                    {
+                        "nome": item.nome,
+                        "produto_id": item.produto_id,
+                        "quantidade": item.quantidade,
+                        "valor": item.valor,
+                        "id_agricultor": item.agricultor_id
+                    }
+                    for item in itens
+                ]
+                
+                # Calculate the total value of the pedido
+                valor_total = sum(item.valor * item.quantidade for item in itens)
+                
+                # Append pedido data to response
+                response_data.append({
+                    "pedido_id":pedido.id,
+                    "produtos": produtos,
+                    "valor_total": valor_total,
+                    "status": pedido.status
+                })
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+        
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class AcompanharPedidoAPIView(APIView):
     def get(self, request, pedido_id):
         try:
             # Busca o pedido pelo ID e valida o cliente
-            pedido = Pedido.objects.get(id=pedido_id, cliente=request.user)
+            pedido = Pedido.objects.get(id=pedido_id)
             
             # Recupera os itens do pedido
-            itens = ItemPedido.objects.filter(pedido=pedido)
+            itens = ItemPedido.objects.filter(pedido=pedido.id)
             produtos = [
                 {
-                    "nome": item.produto.nome,
+                    "nome": item.nome,
+                    "produto_id": item.produto_id,
                     "quantidade": item.quantidade,
-                    "preco": item.preco,
+                    "valor": item.valor,
+                    "id_agricultor": item.agricultor_id
                 }
                 for item in itens
             ]
@@ -31,7 +98,7 @@ class AcompanharPedidoAPIView(APIView):
             return Response(
                 {
                     "pedido_id": pedido.id,
-                    "cliente": pedido.cliente.username,
+                    "cliente_id": pedido.cliente_id,
                     "status": pedido.status,
                     "total": pedido.total,
                     "produtos": produtos,

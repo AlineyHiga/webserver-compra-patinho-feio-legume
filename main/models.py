@@ -37,6 +37,7 @@ class ItemPedido(models.Model):
     quantidade = models.PositiveIntegerField()
     valor = models.DecimalField(max_digits=10, decimal_places=2)  # Valor unitário
     agricultor_id = models.IntegerField()  # ID do agricultor associado ao produto
+    nome = models.CharField(max_length=255, null=True, blank=True)
 
     def __str__(self):
         return f"Item {self.produto_id} do Pedido {self.pedido.id}"
