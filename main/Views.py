@@ -1,6 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+
+from main.servicos import patch_quantidade_produto
 from .models import Pedido, ItemPedido
 from django.contrib.auth import get_user_model
 from paypalrestsdk import Payment
@@ -123,11 +125,12 @@ class EfetuarCompraAPIView(APIView):
         try:
             # Begin a database transaction
             with transaction.atomic():
-                # Criar o pedido no banco de dados
+                # Create the order (Pedido)
                 pedido = Pedido.objects.create(cliente_id=cliente_id)
 
-                total = 0  # Para somar o total do pedido
-                itens_paypal = []  # Para a integração PayPal
+                total = 0  # For summing up the total order amount
+                itens_paypal = []  # For PayPal integration
+                updated_items = []  # Keep track of updated inventory for rollback
 
                 for item in produtos:
                     produto_id = item.get('produto_id')
@@ -137,13 +140,13 @@ class EfetuarCompraAPIView(APIView):
                     nome = item.get('nome')
 
                     if not produto_id or not quantidade or not valor or not agricultor_id:
-                        return Response({"error": f"Dados do item incompletos: {item}."}, status=400)
+                        raise ValueError(f"Dados do item incompletos: {item}.")
 
                     preco_total = valor * quantidade
                     total += preco_total
 
-                    # Adicionar item ao banco de dados
-                    ItemPedido.objects.create(
+                    # Create the order item (ItemPedido)
+                    item_pedido = ItemPedido.objects.create(
                         pedido=pedido,
                         produto_id=produto_id,
                         quantidade=quantidade,
@@ -151,7 +154,7 @@ class EfetuarCompraAPIView(APIView):
                         agricultor_id=agricultor_id
                     )
 
-                    # Preparar item para o PayPal
+                    # Add to PayPal item list
                     itens_paypal.append({
                         "name": nome,
                         "sku": str(produto_id),
@@ -160,11 +163,17 @@ class EfetuarCompraAPIView(APIView):
                         "quantity": quantidade
                     })
 
-                # Atualiza o total do pedido
+                    # Deduct from inventory
+                    if patch_quantidade_produto(item, True):
+                        updated_items.append(item)  # Track successfully updated items
+                    else:
+                        raise ValueError(f"Falha ao atualizar o inventário para o produto {produto_id}.")
+
+                # Update the order total
                 pedido.total = total
                 pedido.save()
 
-                # Criar pagamento no PayPal
+                # Create payment in PayPal
                 pagamento = Payment({
                     "intent": "sale",
                     "payer": {
@@ -187,12 +196,12 @@ class EfetuarCompraAPIView(APIView):
                 })
 
                 if pagamento.create():
-                    # Salvar o ID do pagamento no pedido
+                    # Save the payment ID in the order
                     pedido.pagamento_id = pagamento.id
                     pedido.status = 'Pago'
                     pedido.save()
 
-                    # Redirecionar o cliente para aprovação no PayPal
+                    # Redirect customer to PayPal approval
                     for link in pagamento.links:
                         if link.rel == "approval_url":
                             return Response({"approval_url": link.href}, status=status.HTTP_200_OK)
@@ -202,8 +211,36 @@ class EfetuarCompraAPIView(APIView):
 
         except ValueError as e:
             logging.error(f"Erro de valor: {str(e)}")
+            self.rollback_inventory(updated_items)  # Rollback inventory
+            self.delete_order_and_items(pedido)  # Delete the order and associated items
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         except Exception as e:
             logging.error(f"Exceção ao processar pagamento: {str(e)}")
+            self.rollback_inventory(updated_items)  # Rollback inventory
+            self.delete_order_and_items(pedido)  # Delete the order and associated items
             return Response({"error": "Erro no processamento do pagamento."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @staticmethod
+    def rollback_inventory(updated_items):
+        """
+        Rollback the inventory for all items updated so far.
+        """
+        for item in updated_items:
+            try:
+                patch_quantidade_produto(item, False)  # Add back the quantity
+            except Exception as e:
+                logging.error(f"Falha ao reverter o inventário para o item {item.get('produto_id')}: {str(e)}")
+
+    @staticmethod
+    def delete_order_and_items(pedido):
+        """
+        Delete the order and its associated items from the database.
+        """
+        try:
+            if pedido:
+                ItemPedido.objects.filter(pedido=pedido).delete()  # Delete all items
+                pedido.delete()  # Delete the order itself
+                logging.info(f"Pedido ID {pedido.id} e seus itens foram excluídos.")
+        except Exception as e:
+            logging.error(f"Falha ao excluir o pedido ID {pedido.id}: {str(e)}")
