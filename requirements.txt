@@ -1,0 +1,14 @@
+django==3.2.9  # Exemplo de versão compatível
+djangorestframework==3.13.1  # Exemplo de versão compatível
+psycopg2-binary
+python-decouple
+asgiref
+whitenoise
+gunicorn
+django-cors-headers
+Pillow
+django-storages
+requests
+vercel_storage
+paypalrestsdk
+cryptography
