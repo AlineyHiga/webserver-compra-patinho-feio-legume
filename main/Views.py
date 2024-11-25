@@ -118,9 +118,9 @@ class EfetuarCompraAPIView(APIView):
         cliente_id = request.data.get('cliente', {}).get('id')
 
         if not produtos:
-            return Response({"error": "Nenhum produto fornecido."}, status=400)
+            return Response({"error": "Nenhum produto fornecido."}, status=status.HTTP_400_BAD_REQUEST)
         if not cliente_id:
-            return Response({"error": "ID do cliente não fornecido."}, status=400)
+            return Response({"error": "ID do cliente não fornecido."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             # Begin a database transaction
@@ -128,11 +128,12 @@ class EfetuarCompraAPIView(APIView):
                 # Create the order (Pedido)
                 pedido = Pedido.objects.create(cliente_id=cliente_id)
 
-                total = 0  # For summing up the total order amount
-                itens_paypal = []  # For PayPal integration
-                updated_items = []  # Keep track of updated inventory for rollback
+                total = 0  # Total value of the order
+                itens_paypal = []  # Items for PayPal
+                updated_items = []  # Track successfully updated items for rollback
 
                 for item in produtos:
+                    # Extract and validate item details
                     produto_id = item.get('produto_id')
                     quantidade = item.get('quantidade')
                     valor = item.get('valor')
@@ -142,6 +143,7 @@ class EfetuarCompraAPIView(APIView):
                     if not produto_id or not quantidade or not valor or not agricultor_id:
                         raise ValueError(f"Dados do item incompletos: {item}.")
 
+                    # Calculate the total for the item
                     preco_total = valor * quantidade
                     total += preco_total
 
@@ -151,21 +153,22 @@ class EfetuarCompraAPIView(APIView):
                         produto_id=produto_id,
                         quantidade=quantidade,
                         valor=valor,
-                        agricultor_id=agricultor_id
+                        agricultor_id=agricultor_id,
+                        nome=nome
                     )
 
-                    # Add to PayPal item list
+                    # Prepare item data for PayPal
                     itens_paypal.append({
                         "name": nome,
                         "sku": str(produto_id),
                         "price": f"{valor:.2f}",
-                        "currency": "USD",
+                        "currency": "BRL",
                         "quantity": quantidade
                     })
 
-                    # Deduct from inventory
+                    # Deduct inventory
                     if patch_quantidade_produto(item, True):
-                        updated_items.append(item)  # Track successfully updated items
+                        updated_items.append(item)  # Track successful updates
                     else:
                         raise ValueError(f"Falha ao atualizar o inventário para o produto {produto_id}.")
 
@@ -173,7 +176,7 @@ class EfetuarCompraAPIView(APIView):
                 pedido.total = total
                 pedido.save()
 
-                # Create payment in PayPal
+                # Create PayPal payment
                 pagamento = Payment({
                     "intent": "sale",
                     "payer": {
@@ -189,58 +192,100 @@ class EfetuarCompraAPIView(APIView):
                         },
                         "amount": {
                             "total": f"{total:.2f}",
-                            "currency": "USD"
+                            "currency": "BRL"
                         },
                         "description": f"Compra no sistema, Pedido ID: {pedido.id}"
                     }]
                 })
 
+                # Attempt to create the PayPal payment
                 if pagamento.create():
-                    # Save the payment ID in the order
                     pedido.pagamento_id = pagamento.id
-                    pedido.status = 'Pago'
+                    pedido.status = "Aguardando pagamento"
                     pedido.save()
 
-                    # Redirect customer to PayPal approval
+                    # Find the approval URL to redirect the user
                     for link in pagamento.links:
                         if link.rel == "approval_url":
                             return Response({"approval_url": link.href}, status=status.HTTP_200_OK)
+
+                    raise ValueError("URL de aprovação não encontrada.")
                 else:
                     logging.error(f"Erro ao criar pagamento no PayPal: {pagamento.error}")
                     raise ValueError("Falha ao criar pagamento no PayPal.")
 
         except ValueError as e:
             logging.error(f"Erro de valor: {str(e)}")
-            self.rollback_inventory(updated_items)  # Rollback inventory
-            self.delete_order_and_items(pedido)  # Delete the order and associated items
+            self.rollback_inventory(updated_items)
+            self.delete_order_and_items(pedido)
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         except Exception as e:
-            logging.error(f"Exceção ao processar pagamento: {str(e)}")
-            self.rollback_inventory(updated_items)  # Rollback inventory
-            self.delete_order_and_items(pedido)  # Delete the order and associated items
-            return Response({"error": "Erro no processamento do pagamento."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            logging.error(f"Erro inesperado ao processar pagamento: {str(e)}")
+            self.rollback_inventory(updated_items)
+            self.delete_order_and_items(pedido)
+            return Response({"error": "Erro inesperado no processamento."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @staticmethod
     def rollback_inventory(updated_items):
         """
-        Rollback the inventory for all items updated so far.
+        Rollback the inventory for all successfully updated items.
         """
         for item in updated_items:
             try:
-                patch_quantidade_produto(item, False)  # Add back the quantity
+                patch_quantidade_produto(item, False)  # Revert the inventory
             except Exception as e:
-                logging.error(f"Falha ao reverter o inventário para o item {item.get('produto_id')}: {str(e)}")
+                logging.error(f"Falha ao reverter inventário para o produto {item.get('produto_id')}: {str(e)}")
 
     @staticmethod
     def delete_order_and_items(pedido):
         """
-        Delete the order and its associated items from the database.
+        Delete the order and its associated items.
         """
         try:
             if pedido:
-                ItemPedido.objects.filter(pedido=pedido).delete()  # Delete all items
-                pedido.delete()  # Delete the order itself
-                logging.info(f"Pedido ID {pedido.id} e seus itens foram excluídos.")
+                ItemPedido.objects.filter(pedido=pedido).delete()  # Delete associated items
+                pedido.delete()  # Delete the order
+                logging.info(f"Pedido ID {pedido.id} e itens associados foram excluídos.")
         except Exception as e:
-            logging.error(f"Falha ao excluir o pedido ID {pedido.id}: {str(e)}")
+            logging.error(f"Falha ao excluir pedido ID {pedido.id}: {str(e)}")
+
+class ExecutarPaymentAPIView(APIView):
+    def post(self, request):
+        """
+        Handle PayPal payment execution after user approval.
+        """
+        payment_id = request.data.get('paymentId')
+        payer_id = request.data.get('PayerID')
+
+        if not payment_id or not payer_id:
+            return Response({"error": "Payment ID ou Payer ID não fornecido."}, status=400)
+
+        try:
+            # Retrieve the payment object
+            pagamento = Payment.find(payment_id)
+
+            # Execute the payment with the PayerID
+            if pagamento.execute({"payer_id": payer_id}):
+                # Update the Pedido with the executed payment details
+                pedido = Pedido.objects.get(pagamento_id=payment_id)
+                pedido.status = 'Pago'
+                pedido.save()
+
+                logging.info(f"Pagamento {payment_id} executado com sucesso.")
+                return Response({
+                    "message": "Pagamento executado com sucesso.",
+                    "pedido_id": pedido.id,
+                    "status": pedido.status,
+                }, status=200)
+            else:
+                logging.error(f"Falha ao executar o pagamento: {pagamento.error}")
+                return Response({"error": "Falha ao executar o pagamento.", "details": pagamento.error}, status=500)
+
+        except Pedido.DoesNotExist:
+            logging.error(f"Pedido não encontrado para pagamento ID {payment_id}.")
+            return Response({"error": "Pedido não encontrado."}, status=404)
+
+        except Exception as e:
+            logging.error(f"Erro ao processar pagamento: {str(e)}")
+            return Response({"error": "Erro ao processar pagamento.", "details": str(e)}, status=500)
