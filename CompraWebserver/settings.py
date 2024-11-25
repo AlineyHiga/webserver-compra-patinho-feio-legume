@@ -5,7 +5,7 @@ from decouple import config, Csv
 from django.core.management.utils import get_random_secret_key
 import sys
 import os
-
+from corsheaders.defaults import default_headers
 import paypalrestsdk
 
 
@@ -156,7 +156,9 @@ CORS_ORIGIN_ALLOW_ALL =[
 CORS_ALLOWED_ORIGINS = config('CORS_ORIGIN_ALLOW_ALL', cast=Csv(), default="http://localhost:3000")
 # Configurações para o CORS se precisar permitir acesso de qualquer origem (não recomendado em produção)
 CORS_ALLOW_ALL_ORIGINS = True
-
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'vercel_automation_bypass_secret',
+]
 # Configurações de Logs (Opcional)
 LOGGING = {
     'version': 1,
