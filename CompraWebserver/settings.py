@@ -146,7 +146,12 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.BasicAuthentication',
     ],
 }
-
+CORS_ORIGIN_ALLOW_ALL =[
+    "http://localhost",
+    "http://localhost:5000",
+    "http://localhost:3000",
+    "https://patinho-feio-do-legume.vercel.app/"
+]
 # Configurações de CORS (Cross-Origin Resource Sharing)
 CORS_ALLOWED_ORIGINS = config('CORS_ORIGIN_ALLOW_ALL', cast=Csv(), default="http://localhost:3000")
 # Configurações para o CORS se precisar permitir acesso de qualquer origem (não recomendado em produção)
